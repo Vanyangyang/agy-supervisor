@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agy-supervisor": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/dist/agy-supervisor.mjs"
+      ],
+      "default_tools_approval_mode": "approve"
+    }
+  }
+}

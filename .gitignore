@@ -1,0 +1,25 @@
+# Dependencies and local build scratch
+node_modules/
+.dist-next-*/
+.dist-previous-*/
+.meta-tmp/
+
+# Logs
+*.log
+
+# Local Supervisor daemon / runtime state (never commit)
+supervisor.token
+supervisor.epoch
+supervisor.launch.lock
+bootstrap-env.json
+state.json
+.agy-supervisor/
+runtime/
+**/runtime/agy-*.exe
+
+# Test / coverage / editor noise
+coverage/
+.nyc_output/
+*.tmp
+.DS_Store
+Thumbs.db

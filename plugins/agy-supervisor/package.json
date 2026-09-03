@@ -1,0 +1,36 @@
+{
+  "name": "agy-supervisor",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Persistent, version-gated user-level Supervisor for Google Antigravity CLI headless sessions.",
+  "bin": {
+    "agy-supervisor": "dist/agy-supervisor.mjs"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test scripts/*.test.mjs",
+    "test:coverage": "node --experimental-test-coverage --test scripts/*.test.mjs",
+    "help": "node scripts/server.mjs --help",
+    "doctor": "node scripts/server.mjs doctor"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Vanyangyang/agy-supervisor"
+  },
+  "homepage": "https://github.com/Vanyangyang/agy-supervisor",
+  "bugs": {
+    "url": "https://github.com/Vanyangyang/agy-supervisor/issues"
+  }
+}

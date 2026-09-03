@@ -1,0 +1,20 @@
+{
+  "name": "agy-supervisor",
+  "interface": {
+    "displayName": "AGY Supervisor"
+  },
+  "plugins": [
+    {
+      "name": "agy-supervisor",
+      "source": {
+        "source": "local",
+        "path": "./plugins/agy-supervisor"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
