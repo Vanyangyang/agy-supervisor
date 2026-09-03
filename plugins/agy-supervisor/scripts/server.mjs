@@ -10,11 +10,12 @@ import {
   readWindowsUserProxyEnvironment,
 } from "./agy-runtime.mjs";
 import { getHelp, HELP_TOPICS, renderCliHelp } from "./help.mjs";
+import { startPanelFromCli } from "./panel.mjs";
 import { prepareManagedRuntime } from "./runtime-snapshot.mjs";
 import { ensureSupervisorRunning } from "./supervisor-client.mjs";
 import { getSupervisorPaths } from "./supervisor-transport.mjs";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const here = fileURLToPath(import.meta.url);
 const built = path.basename(here) === "agy-supervisor.mjs";
 const daemonEntry = fileURLToPath(new URL(built ? "./agy-supervisor-daemon.mjs" : "./supervisor-daemon.mjs", import.meta.url));
@@ -67,6 +68,10 @@ async function handleCli(argv) {
   }
   if (argv[0] === "doctor") {
     process.stdout.write(`${JSON.stringify(await runDoctor(), null, 2)}\n`);
+    return true;
+  }
+  if (argv[0] === "panel") {
+    await startPanelFromCli();
     return true;
   }
   process.stderr.write("Unknown command. Run agy-supervisor --help.\n");

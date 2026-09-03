@@ -1,9 +1,9 @@
 {
   "name": "agy-supervisor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Persistent, version-gated user-level Supervisor for Google Antigravity CLI headless sessions.",
+  "description": "Persistent, version-gated user-level Supervisor for Google Antigravity CLI headless sessions, with a read-only local status and handoff panel.",
   "bin": {
     "agy-supervisor": "dist/agy-supervisor.mjs"
   },

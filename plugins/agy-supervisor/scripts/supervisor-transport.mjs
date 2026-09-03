@@ -6,7 +6,7 @@ import net from 'node:net';
 
 export const MAX_MESSAGE_BYTES = 64 * 1024;
 export const SUPERVISOR_PROTOCOL_VERSION = 1;
-export const SUPERVISOR_RUNTIME_VERSION = '0.2.0';
+export const SUPERVISOR_RUNTIME_VERSION = '0.3.0';
 
 export function getSupervisorPaths({ localAppData, stateDir: requestedStateDir, userName, homeDir } = {}) {
   const user = String(userName || process.env.USERNAME || userInfo().username);

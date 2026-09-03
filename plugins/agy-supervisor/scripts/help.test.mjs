@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { HELP_TOPICS, getHelp, renderCliHelp } from "./help.mjs";
 
-const EXPECTED_TOPICS = ["overview", "session", "version", "auth", "model", "cancel", "doctor"];
+const EXPECTED_TOPICS = ["overview", "session", "version", "auth", "model", "cancel", "doctor", "panel"];
 
 test("help exports exactly the supported topics", () => {
   assert.deepEqual(Object.keys(HELP_TOPICS), EXPECTED_TOPICS);
@@ -26,6 +26,8 @@ test("help text states the safety and continuity contracts", () => {
   assert.match(getHelp("doctor"), /credential-free/i);
   assert.match(getHelp("doctor"), /never exposes proxy values/i);
   assert.match(getHelp("doctor"), /never runs prompts, models, update, or login/i);
+  assert.match(getHelp("panel"), /read-only/i);
+  assert.match(getHelp("panel"), /127\.0\.0\.1/);
 });
 
 test("CLI help includes every topic and common MCP tool name", () => {

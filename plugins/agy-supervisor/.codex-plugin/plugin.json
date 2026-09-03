@@ -1,7 +1,7 @@
 {
   "name": "agy-supervisor",
-  "version": "0.2.0",
-  "description": "Persistent, version-gated supervision for Google Antigravity CLI headless sessions.",
+  "version": "0.3.0",
+  "description": "Persistent, version-gated supervision for Google Antigravity CLI headless sessions, plus a read-only local status and handoff panel.",
   "author": {
     "name": "Vanyangyang",
     "url": "https://github.com/Vanyangyang"
@@ -18,8 +18,8 @@
   ],
   "interface": {
     "displayName": "AGY Supervisor",
-    "shortDescription": "Keep explicit auto-approved Antigravity sessions alive across reconnects.",
-    "longDescription": "Independent unofficial Supervisor for the official Google Antigravity CLI. Not affiliated with or endorsed by Google or OpenAI. Runs Antigravity CLI as a persistent, ordinary-user headless process using its documented stream-json protocol and the current user's existing authentication profile. Each logical session freezes its model and effort, resumes only by its exact conversation ID, verifies the approved AGY version, hash, signature, and capabilities before sending work, and never reads, copies, or bypasses AGY credentials. Every managed child explicitly uses --dangerously-skip-permissions, so all AGY tool calls are auto-approved; uncertain turns are surfaced and never replayed automatically. Windows daemon launch uses PowerShell -ExecutionPolicy Bypass only for ordinary-user detached process launch, not elevation.",
+    "shortDescription": "Keep explicit auto-approved Antigravity sessions alive across reconnects; inspect a read-only local status panel.",
+    "longDescription": "Independent unofficial Supervisor for the official Google Antigravity CLI. Not affiliated with or endorsed by Google or OpenAI. Runs Antigravity CLI as a persistent, ordinary-user headless process using its documented stream-json protocol and the current user's existing authentication profile. Each logical session freezes its model and effort, resumes only by its exact conversation ID, verifies the approved AGY version, hash, signature, and capabilities before sending work, and never reads, copies, or bypasses AGY credentials. Every managed child explicitly uses --dangerously-skip-permissions, so all AGY tool calls are auto-approved; uncertain turns are surfaced and never replayed automatically. Windows daemon launch uses PowerShell -ExecutionPolicy Bypass only for ordinary-user detached process launch, not elevation. A loopback-only read-only status panel can copy a sanitized no-side-effect handoff JSON; it cannot send, resume, cancel, or edit sessions.",
     "developerName": "Vanyangyang",
     "category": "Developer Tools",
     "capabilities": [

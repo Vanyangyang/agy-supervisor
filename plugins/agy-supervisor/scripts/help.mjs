@@ -14,6 +14,8 @@ Common MCP tools: agy_help, agy_doctor, agy_session_start, agy_session_inspect, 
   cancel: `Cancel targets the exact owned child only. Work with an uncertain outcome is never replayed automatically, so a restart cannot duplicate a prompt. Use acknowledge_uncertain with the exact run ID only after reviewing that uncertainty.`,
 
   doctor: `Doctor is credential-free. It reports only whether non-secret HTTP/HTTPS proxy routing is available; it never exposes proxy values and never runs prompts, models, update, or login operations.`,
+
+  panel: `The local status panel is read-only. Start it with agy-supervisor panel. It binds 127.0.0.1 only, refreshes with GET, copies a sanitized no-side-effect handoff JSON, and cannot send, resume, cancel, close, edit model/effort/permissions, or run login/updater/AGY commands.`,
 });
 
 const TOPIC_NAMES = Object.freeze(Object.keys(HELP_TOPICS));
@@ -27,7 +29,7 @@ export function getHelp(topic = "overview") {
 export function renderCliHelp() {
   return [
     "AGY Supervisor",
-    "Usage: agy-supervisor --help | help <topic> | doctor",
+    "Usage: agy-supervisor --help | help <topic> | doctor | panel",
     "",
     `Topics: ${TOPIC_NAMES.join(", ")}`,
     "MCP tools: agy_help, agy_doctor, agy_session_start, agy_session_inspect, agy_session_control",

@@ -25,7 +25,7 @@ AGY Supervisor keeps a Google Antigravity CLI conversation available when an MCP
 
 Every managed child explicitly uses `--sandbox --dangerously-skip-permissions` and must attest `always-proceed` before any prompt is sent. This auto-approves all AGY tool calls, including commands and file writes; the sandbox is not a substitute for permission review. Treat every session turn as a fully authorized writer for workspace-serialization purposes.
 
-Version 0.2 serializes AGY turns by canonical workspace inside this Supervisor. It does not claim an atomic cross-process lock against Cursor Bridge or Grok Build Supervisor; the primary orchestrator must keep those independent writers serialized.
+Version 0.3 serializes AGY turns by canonical workspace inside this Supervisor. It does not claim an atomic cross-process lock against Cursor Bridge or Grok Build Supervisor; the primary orchestrator must keep those independent writers serialized.
 
 Durable history retains at most 500 full terminal runs plus 500 compact idempotency tombstones, and at most 200 open sessions. Reusing a request ID is protected inside that retention window; older evicted IDs are not a permanent global deduplication ledger.
 
@@ -49,13 +49,16 @@ node .\dist\agy-supervisor.mjs --help
 node .\dist\agy-supervisor.mjs help session
 node .\dist\agy-supervisor.mjs help auth
 node .\dist\agy-supervisor.mjs doctor
+node .\dist\agy-supervisor.mjs panel
 ```
+
+`panel` opens a loopback-only, read-only status page (`http://127.0.0.1`) with a random local port and an access token. It reads bounded Supervisor inspect/ping data, auto-refreshes with GET, and can copy a sanitized no-side-effect handoff JSON. It cannot send prompts, resume, cancel, close, edit model/effort/permissions, or run login/updater/AGY commands. Resume remains outside the panel via MCP tools plus `SEND_TO_AGY` confirmation.
 
 `doctor` is credential-free: it checks the local executable path, version, hash, Authenticode signature, required `--help` capabilities, and reports only whether non-secret HTTP/HTTPS proxy routing is available. It never exposes proxy values, sends a prompt, or invokes `agy models`, `agy update`, or login.
 
 MCP tools:
 
-- `agy_help` — concise help for `overview`, `session`, `version`, `auth`, `model`, `cancel`, or `doctor`.
+- `agy_help` — concise help for `overview`, `session`, `version`, `auth`, `model`, `cancel`, `doctor`, or `panel`.
 - `agy_doctor` — run the no-prompt runtime compatibility gate.
 - `agy_session_start` — asynchronously start a new or resumed turn after explicit `SEND_TO_AGY` confirmation.
 - `agy_session_inspect` — read bounded state, optionally waiting for a change.

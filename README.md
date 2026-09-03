@@ -24,6 +24,14 @@ codex plugin marketplace add Vanyangyang/agy-supervisor
 codex plugin add agy-supervisor@agy-supervisor
 ```
 
+A loopback-only read-only status panel is available after install:
+
+```powershell
+node .\plugins\agy-supervisor\dist\agy-supervisor.mjs panel
+```
+
+The panel inspects bounded Supervisor state and can copy a sanitized handoff JSON. It is not an Antigravity chat client.
+
 Read the [plugin documentation](plugins/agy-supervisor/README.md) for runtime, authentication, persistence, cancellation, and safety details.
 
 ## License

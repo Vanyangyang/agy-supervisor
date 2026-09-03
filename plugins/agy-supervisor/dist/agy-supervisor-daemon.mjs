@@ -1503,7 +1503,7 @@ import { join, resolve as resolve3 } from "node:path";
 import net from "node:net";
 var MAX_MESSAGE_BYTES = 64 * 1024;
 var SUPERVISOR_PROTOCOL_VERSION = 1;
-var SUPERVISOR_RUNTIME_VERSION = "0.2.0";
+var SUPERVISOR_RUNTIME_VERSION = "0.3.0";
 function getSupervisorPaths({ localAppData, stateDir: requestedStateDir, userName, homeDir } = {}) {
   const user = String(userName || process.env.USERNAME || userInfo().username);
   const stateDir = resolve3(requestedStateDir || (localAppData ? join(localAppData, "agy-supervisor") : join(homeDir || homedir(), ".agy-supervisor")));
