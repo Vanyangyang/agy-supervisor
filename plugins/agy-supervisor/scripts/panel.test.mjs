@@ -242,6 +242,8 @@ test("page has no mutation controls", () => {
   assert.match(html, /if \(!response\.ok\)/);
   assert.match(html, /Status unavailable; handoff cleared/);
   assert.match(html, /id="copy-handoff" disabled/);
+  assert.match(html, /getElementById\("empty-state"\)\.hidden = true/);
+  assert.doesNotMatch(html, /sessions\[0\]\?\.sessionId \|\| ""/);
 });
 
 test("offline empty running and uncertain states are correct", async () => {
@@ -360,13 +362,15 @@ test("page ignores stale refreshes and clears handoff after the latest failure",
     className: "",
     hidden: false,
     disabled: false,
-    value: "",
+    value: id === "option" ? undefined : "",
     checked: id === "auto-refresh",
     children: [],
     listeners: {},
     replaceChildren(...children) {
       this.children = children;
-      this.value = "";
+      this.value = children.length === 1
+        ? (children[0].value ?? children[0].textContent)
+        : "";
     },
     append(...children) {
       this.children.push(...children);
@@ -423,9 +427,52 @@ test("page ignores stale refreshes and clears handoff after the latest failure",
   assert.match(nodes.get("handoff-preview").textContent, /"revision": 2/);
 
   nodes.get("refresh").listeners.click();
-  pending[2].reject(new Error("offline"));
+  pending[2].resolve({
+    ok: true,
+    json: async () => ({
+      ...payload(3),
+      sessions: [],
+      omittedSessions: 0,
+      selectedSession: null,
+      handoff: { schemaVersion: 1, sessionId: null, revision: 3 },
+    }),
+  });
   await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(nodes.get("empty-state").hidden, false);
+
+  nodes.get("refresh").listeners.click();
+  pending[3].reject(new Error("offline"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(nodes.get("empty-state").hidden, true);
+  assert.equal(nodes.get("session-select").value, "");
   assert.equal(nodes.get("handoff-preview").textContent, "{}");
   assert.equal(nodes.get("copy-handoff").disabled, true);
-  assert.equal(nodes.get("status-live").textContent, "Status unavailable; handoff cleared.");
+
+  nodes.get("refresh").listeners.click();
+  pending[4].resolve({
+    ok: true,
+    json: async () => ({
+      daemonOnline: true,
+      errorKind: "SESSION_NOT_FOUND",
+      epochId: "epoch-1",
+      revision: 3,
+      supervisorVersion: "0.3.0",
+      protocolVersion: 1,
+      sessions: [
+        { sessionId: "agy-1", status: "idle", lifecycle: "idle" },
+        { sessionId: "agy-2", status: "idle", lifecycle: "idle" },
+      ],
+      omittedSessions: 0,
+      selectedSession: null,
+      selectedRun: null,
+      handoff: { schemaVersion: 1, sessionId: null, revision: 3 },
+    }),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(nodes.get("session-select").value, "");
+  assert.equal(nodes.get("error-state").hidden, false);
+  assert.match(nodes.get("error-state").textContent, /SESSION_NOT_FOUND/);
+  assert.match(nodes.get("handoff-preview").textContent, /"sessionId": null/);
+  assert.equal(nodes.get("handoff-preview").textContent.includes("agy-1"), false);
+  assert.equal(nodes.get("copy-handoff").disabled, false);
 });

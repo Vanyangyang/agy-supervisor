@@ -32501,11 +32501,13 @@ async function load() {
     setText("daemon-online", "unknown", "status-warn");
     for (const id of ["daemon-epoch", "daemon-revision", "daemon-version", "daemon-protocol"]) setText(id, null);
     document.getElementById("offline-state").hidden = true;
+    document.getElementById("empty-state").hidden = true;
     document.getElementById("omitted-state").hidden = true;
     const error = document.getElementById("error-state");
     error.hidden = false;
     error.textContent = "Status unavailable; previous data was cleared.";
     const option = document.createElement("option");
+    option.value = "";
     option.textContent = "Status unavailable";
     sessionSelect.replaceChildren(option);
     sessionSelect.disabled = true;
@@ -32550,7 +32552,7 @@ async function load() {
   const preferredId = data.selectedSession?.sessionId || current;
   selectedId = sessions.some((session) => session.sessionId === preferredId)
     ? preferredId
-    : (sessions[0]?.sessionId || "");
+    : "";
   sessionSelect.value = selectedId;
   const session = data.selectedSession;
   const run = data.selectedRun;
