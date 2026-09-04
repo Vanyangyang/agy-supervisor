@@ -69,7 +69,7 @@ async function writeBootstrapEnvironment(paths) {
   }
 }
 
-function assertCompatiblePing(result) {
+export function assertCompatiblePing(result) {
   if (result?.protocolVersion !== SUPERVISOR_PROTOCOL_VERSION) throw clientFailure('protocol_mismatch');
   if (result?.runtimeVersion !== SUPERVISOR_RUNTIME_VERSION) throw clientFailure('runtime_version_mismatch');
   if (result?.ready !== true) throw clientFailure('daemon_starting');

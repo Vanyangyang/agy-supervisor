@@ -44,6 +44,8 @@ The Supervisor intentionally fails closed when the installed AGY executable does
 
 ## Common commands
 
+From this plugin directory in a source checkout:
+
 ```powershell
 node .\dist\agy-supervisor.mjs --help
 node .\dist\agy-supervisor.mjs help session
@@ -52,7 +54,7 @@ node .\dist\agy-supervisor.mjs doctor
 node .\dist\agy-supervisor.mjs panel
 ```
 
-`panel` opens a loopback-only, read-only status page (`http://127.0.0.1`) with a random local port and an access token. It reads bounded Supervisor inspect/ping data, auto-refreshes with GET, and can copy a sanitized no-side-effect handoff JSON. It cannot send prompts, resume, cancel, close, edit model/effort/permissions, or run login/updater/AGY commands. Resume remains outside the panel via MCP tools plus `SEND_TO_AGY` confirmation.
+`panel` opens a loopback-only, read-only status page (`http://127.0.0.1`) with a random local port and an access token. It reads bounded Supervisor inspect/ping data, auto-refreshes with GET, and can copy a sanitized no-side-effect handoff JSON. It cannot send prompts, resume, cancel, close, edit model/effort/permissions, or run login/updater/AGY commands. Resume remains outside the panel via MCP tools plus `SEND_TO_AGY` confirmation. Whether a Codex host exposes an installed plugin as a shell command is host-specific and is not claimed here.
 
 `doctor` is credential-free: it checks the local executable path, version, hash, Authenticode signature, required `--help` capabilities, and reports only whether non-secret HTTP/HTTPS proxy routing is available. It never exposes proxy values, sends a prompt, or invokes `agy models`, `agy update`, or login.
 

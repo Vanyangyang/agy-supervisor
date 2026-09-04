@@ -24,7 +24,7 @@ codex plugin marketplace add Vanyangyang/agy-supervisor
 codex plugin add agy-supervisor@agy-supervisor
 ```
 
-A loopback-only read-only status panel is available after install:
+From a repository checkout, the checked-in bundle can start a loopback-only read-only status panel:
 
 ```powershell
 node .\plugins\agy-supervisor\dist\agy-supervisor.mjs panel

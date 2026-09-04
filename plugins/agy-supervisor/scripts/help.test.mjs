@@ -28,6 +28,7 @@ test("help text states the safety and continuity contracts", () => {
   assert.match(getHelp("doctor"), /never runs prompts, models, update, or login/i);
   assert.match(getHelp("panel"), /read-only/i);
   assert.match(getHelp("panel"), /127\.0\.0\.1/);
+  assert.match(getHelp("panel"), /node \.\\dist\\agy-supervisor\.mjs panel/);
 });
 
 test("CLI help includes every topic and common MCP tool name", () => {
@@ -37,4 +38,5 @@ test("CLI help includes every topic and common MCP tool name", () => {
     assert.match(cli, new RegExp(tool));
   }
   assert.match(cli, /stream-json/);
+  assert.match(cli, /Usage \(source checkout\): node \.\\dist\\agy-supervisor\.mjs/);
 });

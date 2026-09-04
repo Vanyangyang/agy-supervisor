@@ -1,6 +1,6 @@
 import http from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { SupervisorClient } from "./supervisor-client.mjs";
+import { assertCompatiblePing, SupervisorClient } from "./supervisor-client.mjs";
 import {
   SUPERVISOR_PROTOCOL_VERSION,
   SUPERVISOR_RUNTIME_VERSION,
@@ -71,14 +71,42 @@ export function boundedErrorKind(value) {
   return /^[A-Za-z][A-Za-z0-9_]{0,95}$/u.test(value) ? value : "ERROR";
 }
 
+function panelStateError(kind) {
+  const error = new Error(kind);
+  error.kind = kind;
+  return error;
+}
+
+function assertCompatibleInspect(value) {
+  assertCompatiblePing({
+    ready: true,
+    protocolVersion: value?.daemon?.protocolVersion,
+    runtimeVersion: value?.daemon?.runtimeVersion,
+  });
+  if (typeof value?.epochId !== "string" || !value.epochId) {
+    throw panelStateError("DAEMON_STATE_UNAVAILABLE");
+  }
+  return value;
+}
+
+function sanitizeSessionList(value) {
+  return {
+    sessions: Array.isArray(value?.sessions)
+      ? value.sessions.map(sanitizeSession).filter(Boolean)
+      : [],
+    omittedSessions: Number.isInteger(value?.omittedSessions) && value.omittedSessions > 0
+      ? value.omittedSessions
+      : 0,
+  };
+}
+
 export function publicLifecycle(status) {
   const value = String(status || "").toLowerCase();
   if (!value) return "empty";
   if (["starting", "running", "cancel_requested"].includes(value)) return "running";
-  if (["needs_attention", "unknown_after_restart", "update_pending_compatibility"].includes(value)) return "uncertain";
-  if (value === "closed") return "closed";
-  if (value === "idle") return "idle";
-  return value.slice(0, 64);
+  if (["needs_attention", "unknown_after_restart", "update_pending_compatibility", "acknowledged_uncertain"].includes(value)) return "uncertain";
+  if (["closed", "idle", "completed", "failed", "cancelled_before_send"].includes(value)) return value;
+  return "uncertain";
 }
 
 export function sanitizeSession(session) {
@@ -108,7 +136,6 @@ export function sanitizeRun(run) {
   return {
     runId: run.runId ?? null,
     sessionId: run.sessionId ?? null,
-    requestId: run.requestId ?? null,
     status: run.status ?? null,
     lifecycle: publicLifecycle(run.status),
     phase: typeof run.phase === "string" ? run.phase.slice(0, 64) : null,
@@ -144,7 +171,6 @@ export function buildHandoffPayload({
     sessionStatus: session?.status ?? null,
     runStatus: run?.status ?? null,
     runId: run?.runId ?? null,
-    requestId: run?.requestId ?? null,
     startedAt: run?.startedAt ?? session?.createdAt ?? null,
     updatedAt: run?.updatedAt ?? session?.updatedAt ?? null,
   };
@@ -165,37 +191,62 @@ export async function readPanelState(client, {
     epochId: null,
     revision: null,
     sessions: [],
+    omittedSessions: 0,
     selectedSession: null,
     selectedRun: null,
     handoff: buildHandoffPayload({ generatedAt, supervisorVersion }),
   });
-  if (!client || typeof client.inspect !== "function") return offline("DAEMON_OFFLINE");
+  if (!client || typeof client.ping !== "function" || typeof client.inspect !== "function") return offline("DAEMON_OFFLINE");
   try {
-    const ping = typeof client.ping === "function" ? await client.ping() : { ready: true };
-    const inspect = await client.inspect(sessionId ? { sessionId } : {});
-    const sessions = Array.isArray(inspect?.sessions)
-      ? inspect.sessions.map(sanitizeSession).filter(Boolean)
-      : (inspect?.session ? [sanitizeSession(inspect.session)].filter(Boolean) : []);
-    const selectedSession = sanitizeSession(inspect?.session) || (sessionId
-      ? sessions.find((item) => item.sessionId === sessionId) || null
-      : sessions[0] || null);
-    const selectedRun = sanitizeRun(inspect?.run);
-    const epochId = inspect?.epochId ?? ping?.epochId ?? null;
-    const revision = Number.isInteger(inspect?.revision) ? inspect.revision : null;
+    const ping = assertCompatiblePing(await client.ping());
+    let list = assertCompatibleInspect(await client.inspect({}));
+    let sanitizedList = sanitizeSessionList(list);
+    let { sessions, omittedSessions } = sanitizedList;
+    const selectedId = sessionId || sessions[0]?.sessionId || null;
+    let detail = null;
+    let errorKind = null;
+    if (selectedId) {
+      try {
+        detail = assertCompatibleInspect(await client.inspect({ sessionId: selectedId }));
+        if (detail.epochId !== list.epochId) throw panelStateError("DAEMON_RESTARTED");
+      } catch (error) {
+        const kind = boundedErrorKind(error?.kind || error?.code);
+        if (kind !== "SESSION_NOT_FOUND") throw error;
+        errorKind = kind;
+        list = assertCompatibleInspect(await client.inspect({}));
+        sanitizedList = sanitizeSessionList(list);
+        ({ sessions, omittedSessions } = sanitizedList);
+      }
+    }
+    const detailedSession = sanitizeSession(detail?.session);
+    if (detailedSession && !sessions.some((item) => item.sessionId === detailedSession.sessionId)) {
+      sessions = [detailedSession, ...sessions];
+      omittedSessions = Math.max(0, omittedSessions - 1);
+    }
+    const selectedSession = detailedSession || (!errorKind
+      ? sessions.find((item) => item.sessionId === selectedId) || null
+      : null);
+    const selectedRun = sanitizeRun(detail?.run);
+    const epochId = detail?.epochId ?? list?.epochId ?? ping?.epochId ?? null;
+    const revision = Number.isInteger(detail?.revision)
+      ? detail.revision
+      : (Number.isInteger(list?.revision) ? list.revision : null);
+    const daemon = detail?.daemon || list?.daemon;
     return {
-      daemonOnline: ping?.ready !== false,
-      errorKind: null,
+      daemonOnline: true,
+      errorKind,
       generatedAt,
-      supervisorVersion: inspect?.daemon?.runtimeVersion || ping?.runtimeVersion || supervisorVersion,
-      protocolVersion: inspect?.daemon?.protocolVersion || ping?.protocolVersion || SUPERVISOR_PROTOCOL_VERSION,
+      supervisorVersion: daemon?.runtimeVersion || ping.runtimeVersion || supervisorVersion,
+      protocolVersion: daemon?.protocolVersion || ping.protocolVersion || SUPERVISOR_PROTOCOL_VERSION,
       epochId,
       revision,
       sessions,
+      omittedSessions,
       selectedSession,
       selectedRun,
       handoff: buildHandoffPayload({
         generatedAt,
-        supervisorVersion: inspect?.daemon?.runtimeVersion || supervisorVersion,
+        supervisorVersion: daemon?.runtimeVersion || supervisorVersion,
         epochId,
         revision,
         session: selectedSession,
@@ -270,6 +321,7 @@ pre { overflow:auto; background:#00000055; padding:.75rem; border-radius:8px; wh
     <section aria-labelledby="sessions-heading">
       <h2 id="sessions-heading">Sessions</h2>
       <p id="empty-state" hidden>No sessions are recorded.</p>
+      <p id="omitted-state" class="status-warn" hidden></p>
       <label for="session-select">Selected session</label>
       <select id="session-select" aria-describedby="sessions-heading"></select>
     </section>
@@ -283,7 +335,7 @@ pre { overflow:auto; background:#00000055; padding:.75rem; border-radius:8px; wh
     <p>Sanitized no-side-effect snapshot. Copy does not take over a session and omits prompts, responses, secrets, and environment.</p>
     <pre id="handoff-preview" aria-live="polite">{}</pre>
     <div class="row">
-      <button type="button" id="copy-handoff">Copy handoff JSON</button>
+      <button type="button" id="copy-handoff" disabled>Copy handoff JSON</button>
       <span id="copy-status" role="status"></span>
     </div>
   </section>
@@ -299,8 +351,10 @@ pre { overflow:auto; background:#00000055; padding:.75rem; border-radius:8px; wh
 const token = new URLSearchParams(location.search).get("token") || "";
 const sessionSelect = document.getElementById("session-select");
 const fields = document.getElementById("session-fields");
+const copyButton = document.getElementById("copy-handoff");
 let selectedId = "";
 let timer = null;
+let loadGeneration = 0;
 function tokenQuery(extra) {
   const params = new URLSearchParams(extra || {});
   params.set("token", token);
@@ -322,22 +376,53 @@ function renderFields(pairs) {
   }
 }
 async function load() {
+  const generation = ++loadGeneration;
   const query = tokenQuery(selectedId ? { sessionId: selectedId } : {});
-  const response = await fetch("/api/status?" + query, { method: "GET", headers: { Accept: "application/json" } });
-  const data = await response.json();
+  let data;
+  try {
+    const response = await fetch("/api/status?" + query, { method: "GET", headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error("status_request_failed");
+    data = await response.json();
+  } catch {
+    if (generation !== loadGeneration) return;
+    setText("daemon-online", "unknown", "status-warn");
+    for (const id of ["daemon-epoch", "daemon-revision", "daemon-version", "daemon-protocol"]) setText(id, null);
+    document.getElementById("offline-state").hidden = true;
+    document.getElementById("omitted-state").hidden = true;
+    const error = document.getElementById("error-state");
+    error.hidden = false;
+    error.textContent = "Status unavailable; previous data was cleared.";
+    const option = document.createElement("option");
+    option.textContent = "Status unavailable";
+    sessionSelect.replaceChildren(option);
+    sessionSelect.disabled = true;
+    renderFields([]);
+    document.getElementById("handoff-preview").textContent = "{}";
+    copyButton.disabled = true;
+    document.getElementById("copy-status").textContent = "";
+    document.getElementById("status-live").textContent = "Status unavailable; handoff cleared.";
+    return;
+  }
+  if (generation !== loadGeneration) return;
   setText("daemon-online", data.daemonOnline ? "yes" : "no", data.daemonOnline ? "status-ok" : "status-bad");
   setText("daemon-epoch", data.epochId);
   setText("daemon-revision", data.revision);
   setText("daemon-version", data.supervisorVersion);
   setText("daemon-protocol", data.protocolVersion);
-  document.getElementById("offline-state").hidden = data.daemonOnline !== false || Boolean(data.daemonOnline);
   document.getElementById("offline-state").hidden = data.daemonOnline === true;
   const error = document.getElementById("error-state");
   error.hidden = !data.errorKind;
   error.textContent = data.errorKind ? ("Error: " + data.errorKind) : "";
   const sessions = data.sessions || [];
   document.getElementById("empty-state").hidden = !(data.daemonOnline && sessions.length === 0);
+  const omittedSessions = Number.isInteger(data.omittedSessions) && data.omittedSessions > 0 ? data.omittedSessions : 0;
+  const omittedState = document.getElementById("omitted-state");
+  omittedState.hidden = omittedSessions === 0;
+  omittedState.textContent = omittedSessions
+    ? (omittedSessions + " additional session" + (omittedSessions === 1 ? "" : "s") + " omitted.")
+    : "";
   const current = sessionSelect.value;
+  sessionSelect.disabled = sessions.length === 0;
   sessionSelect.replaceChildren();
   const blank = document.createElement("option");
   blank.value = "";
@@ -349,7 +434,10 @@ async function load() {
     option.textContent = session.sessionId + " (" + (session.lifecycle || session.status || "unknown") + ")";
     sessionSelect.append(option);
   }
-  selectedId = data.selectedSession?.sessionId || current || "";
+  const preferredId = data.selectedSession?.sessionId || current;
+  selectedId = sessions.some((session) => session.sessionId === preferredId)
+    ? preferredId
+    : (sessions[0]?.sessionId || "");
   sessionSelect.value = selectedId;
   const session = data.selectedSession;
   const run = data.selectedRun;
@@ -367,7 +455,6 @@ async function load() {
     ["hash gate", session?.runtimeSha256],
     ["signature gate", session?.runtimeSignatureStatus],
     ["activeRunId", session?.activeRunId],
-    ["requestId", run?.requestId],
     ["run status", run?.status],
     ["run lifecycle", run?.lifecycle],
     ["result available", run ? String(Boolean(run.resultAvailable)) : null],
@@ -376,11 +463,14 @@ async function load() {
     ["last error", run?.errorKind],
   ]);
   document.getElementById("handoff-preview").textContent = JSON.stringify(data.handoff || {}, null, 2);
-  document.getElementById("status-live").textContent = data.daemonOnline ? "Status refreshed." : "Daemon offline.";
+  copyButton.disabled = false;
+  document.getElementById("status-live").textContent = data.errorKind
+    ? "Status uncertain."
+    : (data.daemonOnline ? "Status refreshed." : "Daemon offline.");
 }
-document.getElementById("refresh").addEventListener("click", () => { load().catch(() => {}); });
-sessionSelect.addEventListener("change", () => { selectedId = sessionSelect.value; load().catch(() => {}); });
-document.getElementById("copy-handoff").addEventListener("click", async () => {
+document.getElementById("refresh").addEventListener("click", () => { void load(); });
+sessionSelect.addEventListener("change", () => { selectedId = sessionSelect.value; void load(); });
+copyButton.addEventListener("click", async () => {
   const text = document.getElementById("handoff-preview").textContent;
   try {
     await navigator.clipboard.writeText(text);
@@ -392,10 +482,10 @@ document.getElementById("copy-handoff").addEventListener("click", async () => {
 function syncTimer() {
   if (timer) clearInterval(timer);
   timer = null;
-  if (document.getElementById("auto-refresh").checked) timer = setInterval(() => { load().catch(() => {}); }, 4000);
+  if (document.getElementById("auto-refresh").checked) timer = setInterval(() => { void load(); }, 4000);
 }
 document.getElementById("auto-refresh").addEventListener("change", syncTimer);
-load().catch(() => { document.getElementById("status-live").textContent = "Unable to load status."; });
+void load();
 syncTimer();
 </script>
 </body>
@@ -438,7 +528,10 @@ export async function createPanelServer({
   if (host !== "127.0.0.1") {
     throw new Error("panel_bind_loopback_only");
   }
-  const token = accessToken || randomBytes(32).toString("hex");
+  const token = accessToken === undefined ? randomBytes(32).toString("hex") : String(accessToken);
+  if (!/^[0-9a-f]{64}$/iu.test(token)) {
+    throw new Error("panel_access_token_invalid");
+  }
   const server = http.createServer(async (req, res) => {
     const localPort = server.address()?.port;
     if (!isLoopbackAddress(req.socket.remoteAddress) || !isAllowedHost(req.headers.host, localPort)) {
