@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { AgySupervisorController, loadBootstrapEnvironment } from "./supervisor-daemon.mjs";
-import { canonicalWorkspace } from "./state-store.mjs";
+import { canonicalWorkspace, hashPrompt } from "./state-store.mjs";
 import { createHash } from "node:crypto";
 
 const runtime = {
@@ -63,14 +63,18 @@ class FakeSessionProcess {
     };
   }
 
-  async sendTurn(prompt) {
+  async sendTurn(prompt, { captureFullResponse = false } = {}) {
     this.runtimeState = "turn_active";
     this.prompts.push(prompt);
     this.runtimeState = "ready";
+    const fullResponse = `reply-${this.prompts.length}`;
     return {
       status: "SUCCESS",
-      response: `reply-${this.prompts.length}`,
+      response: fullResponse,
       responseTruncated: false,
+      responseBytes: Buffer.byteLength(fullResponse, "utf8"),
+      responseSha256: createHash("sha256").update(fullResponse, "utf8").digest("hex"),
+      ...(captureFullResponse ? { fullResponse } : {}),
       metadata: {
         conversationId: this.conversationId,
         model: this.options.model,
@@ -88,6 +92,30 @@ class FakeSessionProcess {
   async close() {
     this.runtimeState = "closed";
     return { status: "closed", remoteStatus: "exited" };
+  }
+}
+
+class LongResultProcess extends FakeSessionProcess {
+  async sendTurn(prompt, { captureFullResponse = false } = {}) {
+    this.runtimeState = "turn_active";
+    this.prompts.push(prompt);
+    this.runtimeState = "ready";
+    const fullResponse = "界".repeat(9001);
+    return {
+      status: "SUCCESS",
+      response: `${fullResponse.slice(0, 8000)}…`,
+      responseTruncated: true,
+      responseBytes: Buffer.byteLength(fullResponse, "utf8"),
+      responseSha256: createHash("sha256").update(fullResponse, "utf8").digest("hex"),
+      ...(captureFullResponse ? { fullResponse } : {}),
+      metadata: {
+        conversationId: this.conversationId,
+        model: this.options.model,
+        effort: this.options.effort,
+        permissionMode: "always-proceed",
+        effortStatus: "ACCEPTED_NOT_ATTESTED",
+      },
+    };
   }
 }
 
@@ -124,6 +152,7 @@ async function fixture(t, overrides = {}) {
   FakeSessionProcess.instances = [];
   const statePath = path.join(root, "state.json");
   const controller = await new AgySupervisorController({
+    paths: { stateDir: root },
     statePath,
     verifier: { verify: async () => runtime },
     SessionProcess: FakeSessionProcess,
@@ -187,6 +216,199 @@ test("new and resumed turns reuse one persistent process without persisting cont
   assert.equal(durable.includes("reply-2"), false);
 });
 
+test("complete result artifacts are opt-in, exact, and durable across a daemon restart", async (t) => {
+  const { root, workspace, statePath, controller } = await fixture(t, { SessionProcess: LongResultProcess });
+  const fullResponse = "界".repeat(9001);
+  const inline = `${fullResponse.slice(0, 8000)}…`;
+
+  const defaultStarted = await controller.startTurn({
+    mode: "new",
+    cwd: workspace,
+    prompt: "keep the default memory-only response",
+    confirmation: "SEND_TO_AGY",
+  });
+  const defaultDone = await terminal(controller, defaultStarted.run.runId);
+  assert.equal(defaultDone.run.result, inline);
+  assert.equal(defaultDone.run.resultTruncated, true);
+  assert.equal(defaultDone.run.resultArtifact, null);
+  assert.equal((await readFile(statePath, "utf8")).includes(fullResponse), false);
+
+  const savedStarted = await controller.startTurn({
+    mode: "resume",
+    sessionId: defaultStarted.session.sessionId,
+    cwd: workspace,
+    prompt: "save the complete final reply",
+    saveResultArtifact: true,
+    confirmation: "SEND_TO_AGY",
+  });
+  const savedDone = await terminal(controller, savedStarted.run.runId);
+  const artifact = savedDone.run.resultArtifact;
+  assert.equal(savedDone.run.result, inline);
+  assert.equal(savedDone.run.resultTruncated, true);
+  assert.equal(savedDone.run.resultBytes, Buffer.byteLength(inline, "utf8"));
+  assert.equal(savedDone.run.resultSha256, createHash("sha256").update(inline, "utf8").digest("hex"));
+  assert.deepEqual(artifact, {
+    requested: true,
+    status: "available",
+    path: artifact.path,
+    bytes: Buffer.byteLength(fullResponse, "utf8"),
+    sha256: createHash("sha256").update(fullResponse, "utf8").digest("hex"),
+    errorKind: null,
+  });
+  assert.notEqual(savedDone.run.resultBytes, artifact.bytes);
+  assert.notEqual(savedDone.run.resultSha256, artifact.sha256);
+  assert.equal(path.dirname(artifact.path), path.join(root, "results"));
+  assert.equal(await readFile(artifact.path, "utf8"), fullResponse);
+
+  const restarted = await new AgySupervisorController({
+    paths: { stateDir: root },
+    statePath,
+  }).initialize("epoch-restarted");
+  const recovered = await restarted.inspect({ runId: savedStarted.run.runId });
+  assert.equal(recovered.run.resultAvailable, false);
+  assert.equal(Object.hasOwn(recovered.run, "result"), false);
+  assert.deepEqual(recovered.run.resultArtifact, artifact);
+  assert.equal(recovered.session.lastRunId, savedStarted.run.runId);
+  assert.equal(await readFile(recovered.run.resultArtifact.path, "utf8"), fullResponse);
+});
+
+test("artifact write failures remain explicit while the bounded inline result stays available", async (t) => {
+  const { root, workspace, controller } = await fixture(t, { SessionProcess: LongResultProcess });
+  const blockedStateRoot = path.join(root, "not-a-directory");
+  await writeFile(blockedStateRoot, "blocked", "utf8");
+  controller.paths = { stateDir: blockedStateRoot };
+
+  const started = await controller.startTurn({
+    mode: "new",
+    cwd: workspace,
+    prompt: "report the artifact failure without losing the inline result",
+    saveResultArtifact: true,
+    confirmation: "SEND_TO_AGY",
+  });
+  const done = await terminal(controller, started.run.runId);
+  assert.equal(done.run.status, "completed");
+  assert.equal(done.run.resultAvailable, true);
+  assert.equal(done.run.resultTruncated, true);
+  assert.deepEqual(done.run.resultArtifact, {
+    requested: true,
+    status: "failed",
+    path: null,
+    bytes: null,
+    sha256: null,
+    errorKind: "RESULT_ARTIFACT_WRITE_FAILED",
+  });
+});
+
+test("inspect pages newest sessions with bounded run metadata and validates cursors", async (t) => {
+  const { workspace, controller } = await fixture(t);
+  await controller._update((state) => {
+    for (let index = 0; index < 23; index += 1) {
+      const sessionId = `agy-${String(index).padStart(2, "0")}`;
+      const runId = `run-${String(index).padStart(2, "0")}`;
+      const updatedAt = `2026-09-04T00:00:${String(index).padStart(2, "0")}.000Z`;
+      state.sessions[sessionId] = {
+        sessionId,
+        cwd: workspace,
+        workspaceHash: "a".repeat(64),
+        model: "gemini-3.8-flash",
+        effort: "high",
+        effortStatus: "ACCEPTED_NOT_ATTESTED",
+        permissionMode: "always-proceed",
+        status: "idle",
+        createdAt: updatedAt,
+        updatedAt,
+      };
+      state.runs[runId] = {
+        runId,
+        sessionId,
+        requestId: `request-${index}`,
+        workspaceHash: "a".repeat(64),
+        requestSha256: "b".repeat(64),
+        requestBytes: 1,
+        status: "completed",
+        phase: "terminal",
+        resultStatus: "SUCCESS",
+        remoteStatus: "terminal",
+        startedAt: updatedAt,
+        updatedAt,
+      };
+    }
+  });
+
+  const first = await controller.inspect({});
+  assert.equal(first.sessions.length, 20);
+  assert.equal(first.sessions[0].sessionId, "agy-22");
+  assert.equal(first.sessions[19].sessionId, "agy-03");
+  assert.equal(first.omittedSessions, 3);
+  assert.equal(first.nextCursor, "agy-03");
+  assert.equal(first.sessions[0].lastRunId, "run-22");
+  assert.deepEqual(first.sessions[0].recentRuns.map((run) => run.runId), ["run-22"]);
+  assert.equal(Object.hasOwn(first.sessions[0].recentRuns[0], "result"), false);
+  assert.equal(Object.hasOwn(first.sessions[0].recentRuns[0], "resultAvailable"), false);
+
+  const second = await controller.inspect({ cursor: first.nextCursor, limit: 2 });
+  assert.deepEqual(second.sessions.map((session) => session.sessionId), ["agy-02", "agy-01"]);
+  assert.equal(second.omittedSessions, 1);
+  assert.equal(second.nextCursor, "agy-01");
+  const third = await controller.inspect({ cursor: second.nextCursor, limit: 2 });
+  assert.deepEqual(third.sessions.map((session) => session.sessionId), ["agy-00"]);
+  assert.equal(third.omittedSessions, 0);
+  assert.equal(third.nextCursor, null);
+
+  await assert.rejects(controller.inspect({ cursor: "missing" }), { kind: "INVALID_CURSOR" });
+  await assert.rejects(controller.inspect({ limit: 0 }), { kind: "INVALID_SESSION_LIMIT" });
+  await assert.rejects(controller.inspect({ limit: 101 }), { kind: "INVALID_SESSION_LIMIT" });
+  await assert.rejects(controller.inspect({ sessionId: "agy-22", limit: 2 }), { kind: "PAGINATION_NOT_ALLOWED" });
+});
+
+test("history compaction does not delete an explicitly delivered result artifact", async (t) => {
+  const { root, workspace, controller } = await fixture(t);
+  const runId = "run-000";
+  const artifactPath = path.join(root, "results", `${createHash("sha256").update(runId, "utf8").digest("hex")}.txt`);
+  await mkdir(path.dirname(artifactPath), { recursive: true });
+  await writeFile(artifactPath, "delivered final reply", "utf8");
+
+  await controller._update((state) => {
+    state.sessions["agy-closed"] = {
+      sessionId: "agy-closed",
+      cwd: workspace,
+      workspaceHash: "a".repeat(64),
+      model: "gemini-3.8-flash",
+      effort: "high",
+      status: "closed",
+      createdAt: "2026-09-02T00:00:00.000Z",
+      updatedAt: "2026-09-02T00:00:00.000Z",
+    };
+    for (let index = 0; index < 501; index += 1) {
+      const id = `run-${String(index).padStart(3, "0")}`;
+      state.runs[id] = {
+        runId: id,
+        sessionId: "agy-closed",
+        requestId: `request-${index}`,
+        intentSha256: "b".repeat(64),
+        workspaceHash: "a".repeat(64),
+        requestSha256: "c".repeat(64),
+        requestBytes: 1,
+        status: "completed",
+        phase: "terminal",
+        resultStatus: "SUCCESS",
+        remoteStatus: "terminal",
+        startedAt: index === 0 ? "2026-09-02T00:00:00.000Z" : "2026-09-03T00:00:00.000Z",
+        updatedAt: index === 0 ? "2026-09-02T00:00:00.000Z" : "2026-09-03T00:00:00.000Z",
+      };
+    }
+    state.runs[runId].saveResultArtifact = true;
+    state.runs[runId].resultArtifactStatus = "available";
+    state.runs[runId].resultArtifactPath = artifactPath;
+    state.runs[runId].resultArtifactBytes = Buffer.byteLength("delivered final reply", "utf8");
+    state.runs[runId].resultArtifactSha256 = createHash("sha256").update("delivered final reply", "utf8").digest("hex");
+  });
+
+  const state = await controller.store.snapshot();
+  assert.equal(Object.hasOwn(state.runs, runId), false);
+  assert.equal(await readFile(artifactPath, "utf8"), "delivered final reply");
+});
+
 test("a long-lived daemon refreshes the user proxy environment before creating a fresh AGY process", async (t) => {
   const startupEnvironment = {
     USERPROFILE: "C:\\Users\\Old",
@@ -232,6 +454,18 @@ test("request IDs are idempotent and conflicting content fails closed", async (t
     confirmation: "SEND_TO_AGY",
   });
   await terminal(controller, first.run.runId);
+  const stored = (await controller.store.snapshot()).runs[first.run.runId];
+  const request = hashPrompt("same");
+  const legacyIntentSha256 = createHash("sha256").update(JSON.stringify({
+    mode: "new",
+    sessionId: null,
+    workspaceHash: stored.workspaceHash,
+    requestSha256: request.sha256,
+    requestBytes: request.bytes,
+    model: "gemini-3.8-flash",
+    effort: "high",
+  }), "utf8").digest("hex");
+  assert.equal(stored.intentSha256, legacyIntentSha256);
   const replay = await controller.startTurn({
     mode: "new",
     cwd: workspace,
@@ -258,6 +492,17 @@ test("request IDs are idempotent and conflicting content fails closed", async (t
       prompt: "same",
       requestId: "request-stable",
       model: "different-model",
+      confirmation: "SEND_TO_AGY",
+    }),
+    { kind: "REQUEST_ID_CONFLICT" },
+  );
+  await assert.rejects(
+    controller.startTurn({
+      mode: "new",
+      cwd: workspace,
+      prompt: "same",
+      requestId: "request-stable",
+      saveResultArtifact: true,
       confirmation: "SEND_TO_AGY",
     }),
     { kind: "REQUEST_ID_CONFLICT" },

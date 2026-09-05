@@ -31736,7 +31736,7 @@ var HELP_TOPICS = Object.freeze({
   overview: `Agy Supervisor is an independent unofficial project and is not affiliated with or endorsed by Google or OpenAI. It runs a persistent daemon with a stream-json stdin session interface. Every managed AGY session explicitly uses --dangerously-skip-permissions, so all AGY tool calls are auto-approved inside the requested workspace and sandbox boundary.
 
 Common MCP tools: agy_help, agy_doctor, agy_session_start, agy_session_inspect, agy_session_control.`,
-  session: `Sessions are owned by the persistent daemon and use stream-json over stdin. Pass a stable requestId when retry safety matters. After a daemon restart, resume only with the exact confirmed conversation ID; it is opaque and is never guessed or reconstructed. An interrupted turn must be explicitly acknowledged with agy_session_control before new work can continue.`,
+  session: `Sessions are owned by the persistent daemon and use stream-json over stdin. Pass a stable requestId when retry safety matters. After a daemon restart, resume only with the exact confirmed conversation ID; it is opaque and is never guessed or reconstructed. An interrupted turn must be explicitly acknowledged with agy_session_control before new work can continue. List inspect calls return the newest 20 sessions by updatedAt descending then sessionId ascending; use the returned nextCursor and a limit from 1 through 100 to page. Each session includes lastRunId and at most five newest run metadata records, so inspect that exact run ID for detail. Inline terminal replies stay memory-only and bounded. Set saveResultArtifact: true only when a complete final reply must be written as a UTF-8 state-root artifact; its metadata reports available, unavailable, or failed rather than claiming delivery on a write failure.`,
   version: `The supported AGY runtime is 1.1.25 and must pass the exact hash/signature gate. The updater is disabled only in the managed child, not as a general machine-wide setting. A Supervisor protocol or runtime mismatch fails closed and requires a controlled daemon restart. Hash, signature, and version gates are not auto-bypassed; install a reviewed Supervisor release when an upgraded AGY binary is blocked.`,
   auth: `AGY reads the current user's existing profile and Windows Credential Manager. Before each new child, the wrapper refreshes its credential-free environment and fills missing HTTP/HTTPS proxy settings from the current Windows user's enabled proxy configuration. Managed headless children run with CI=true so authentication failure is reported instead of starting an interactive login. The wrapper never reads, copies, or stores credentials; repair authentication only in an interactive terminal running AGY. Windows daemon launch uses PowerShell -ExecutionPolicy Bypass only for ordinary-user detached process launch, not elevation.`,
   model: `Model and effort are fixed for the lifetime of one session. The effective effort value is ACCEPTED_NOT_ATTESTED: the CLI accepted the requested value. This is not an attested thinking-strength measurement from AGY.`,
@@ -32933,15 +32933,18 @@ if (await handleCli(process.argv.slice(2))) {
       requestId: external_exports.string().min(1).max(128).optional().describe("Optional idempotency key"),
       model: external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u).optional().describe("New-session model; defaults to gemini-3.8-flash"),
       effort: external_exports.enum(["low", "medium", "high"]).optional().describe("New-session effort; defaults to high"),
+      saveResultArtifact: external_exports.boolean().optional().default(false).describe("Explicit opt-in only: true writes the complete terminal reply as a UTF-8 artifact under the Supervisor state root; false keeps the existing bounded memory-only result behavior"),
       confirmation: external_exports.literal("SEND_TO_AGY")
     },
     annotations: { readOnlyHint: false, destructiveHint: true }
   }, async (args) => (await getClient()).startTurn(args));
   register("agy_session_inspect", {
-    description: "Inspect bounded durable AGY session/run metadata and, while the same daemon is alive, the in-memory terminal response. Optionally wait for a revision change; timeout never cancels work.",
+    description: "Inspect bounded durable AGY session/run metadata and, while the same daemon is alive, the in-memory terminal response. A list call defaults to the 20 newest sessions, ordered by updatedAt descending then sessionId ascending; use nextCursor and a bounded limit to page. Optionally wait for a revision change; timeout never cancels work.",
     inputSchema: {
       sessionId: external_exports.string().min(1).max(128).optional(),
       runId: external_exports.string().min(1).max(128).optional(),
+      cursor: external_exports.string().min(1).max(128).optional().describe("List-only cursor returned by the preceding page"),
+      limit: external_exports.number().int().min(1).max(100).optional().describe("List-only session page size; default 20"),
       afterRevision: external_exports.number().int().nonnegative().optional(),
       waitMs: external_exports.number().int().min(0).max(25e3).optional().default(0)
     },

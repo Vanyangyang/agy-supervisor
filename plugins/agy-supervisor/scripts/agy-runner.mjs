@@ -85,10 +85,14 @@ function canonicalKey(value, platform) {
   return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
-function boundedResponse(value, maximum) {
-  const normalized = typeof value === "string"
+function normalizedResponse(value) {
+  return typeof value === "string"
     ? value.replace(/\u0000/g, "").replace(/\r\n?/g, "\n").trim()
     : "";
+}
+
+function boundedResponse(value, maximum) {
+  const normalized = normalizedResponse(value);
   return {
     text: normalized.length > maximum ? `${normalized.slice(0, maximum)}…` : normalized,
     truncated: normalized.length > maximum,
@@ -485,13 +489,17 @@ export class AgySessionProcess {
       this._rejectTurn(new AgySessionError("TURN_NOT_SUCCESSFUL"));
       return;
     }
-    const response = boundedResponse(resultContent(value), this._maxResponseChars);
+    // Keep the complete terminal reply only for the in-flight opt-in delivery path.
+    // The ordinary returned response remains bounded before it enters daemon memory.
+    const fullResponse = normalizedResponse(resultContent(value));
+    const response = boundedResponse(fullResponse, this._maxResponseChars);
     this._turn = null;
     this._state = "ready";
     turn.deferred.resolve({
       status: "SUCCESS",
       response: response.text,
       responseTruncated: response.truncated,
+      ...(turn.captureFullResponse ? { fullResponse } : {}),
       metadata: {
         conversationId: this._conversationId,
         model: this._model,
@@ -598,7 +606,7 @@ export class AgySessionProcess {
     return this._startPromise;
   }
 
-  async sendTurn(prompt) {
+  async sendTurn(prompt, { captureFullResponse = false } = {}) {
     if (typeof prompt !== "string" || !prompt.length || Buffer.byteLength(prompt, "utf8") > this._maxPromptBytes) {
       throw new AgySessionError("INVALID_PROMPT");
     }
@@ -611,6 +619,7 @@ export class AgySessionProcess {
         toolError: false,
         permissionDenied: false,
         cancelRequested: false,
+        captureFullResponse: captureFullResponse === true,
       };
       this._turn = turn;
       this._state = "turn_active";

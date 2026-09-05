@@ -72,6 +72,20 @@ test("state validation rejects secrets, raw content, and oversized metadata", as
     /forbidden key/i,
   );
   assert.deepEqual(await store.snapshot(), createEmptyState());
+
+  const artifactMetadata = createEmptyState();
+  artifactMetadata.runs.example = {
+    runId: "example",
+    saveResultArtifact: true,
+    resultArtifactStatus: "available",
+    resultArtifactPath: "C:\\state\\results\\artifact.txt",
+    resultArtifactBytes: 42,
+    resultArtifactSha256: "a".repeat(64),
+    resultArtifactErrorKind: null,
+  };
+  assert.doesNotThrow(() => validatePersistableState(artifactMetadata));
+  artifactMetadata.runs.example.resultArtifactResponse = "must not persist";
+  assert.throws(() => validatePersistableState(artifactMetadata), /forbidden key/i);
 });
 
 test("restart recovery leaves confirmed session configuration but clears transient execution state", () => {

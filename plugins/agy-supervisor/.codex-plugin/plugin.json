@@ -1,6 +1,6 @@
 {
   "name": "agy-supervisor",
-  "version": "0.3.0",
+  "version": "0.3.0+codex.20260905074953",
   "description": "Persistent, version-gated supervision for Google Antigravity CLI headless sessions, plus a read-only local status and handoff panel.",
   "author": {
     "name": "Vanyangyang",

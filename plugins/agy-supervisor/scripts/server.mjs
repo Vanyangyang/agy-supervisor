@@ -136,16 +136,19 @@ if (await handleCli(process.argv.slice(2))) {
       requestId: z.string().min(1).max(128).optional().describe("Optional idempotency key"),
       model: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u).optional().describe("New-session model; defaults to gemini-3.8-flash"),
       effort: z.enum(["low", "medium", "high"]).optional().describe("New-session effort; defaults to high"),
+      saveResultArtifact: z.boolean().optional().default(false).describe("Explicit opt-in only: true writes the complete terminal reply as a UTF-8 artifact under the Supervisor state root; false keeps the existing bounded memory-only result behavior"),
       confirmation: z.literal("SEND_TO_AGY"),
     },
     annotations: { readOnlyHint: false, destructiveHint: true },
   }, async (args) => (await getClient()).startTurn(args));
 
   register("agy_session_inspect", {
-    description: "Inspect bounded durable AGY session/run metadata and, while the same daemon is alive, the in-memory terminal response. Optionally wait for a revision change; timeout never cancels work.",
+    description: "Inspect bounded durable AGY session/run metadata and, while the same daemon is alive, the in-memory terminal response. A list call defaults to the 20 newest sessions, ordered by updatedAt descending then sessionId ascending; use nextCursor and a bounded limit to page. Optionally wait for a revision change; timeout never cancels work.",
     inputSchema: {
       sessionId: z.string().min(1).max(128).optional(),
       runId: z.string().min(1).max(128).optional(),
+      cursor: z.string().min(1).max(128).optional().describe("List-only cursor returned by the preceding page"),
+      limit: z.number().int().min(1).max(100).optional().describe("List-only session page size; default 20"),
       afterRevision: z.number().int().nonnegative().optional(),
       waitMs: z.number().int().min(0).max(25_000).optional().default(0),
     },

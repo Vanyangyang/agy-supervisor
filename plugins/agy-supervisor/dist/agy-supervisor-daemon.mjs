@@ -2,7 +2,7 @@
 
 // scripts/supervisor-daemon.mjs
 import { createHash as createHash6, randomUUID as randomUUID4 } from "node:crypto";
-import { readFile as readFile3, realpath, stat as stat2 } from "node:fs/promises";
+import { chmod as chmod4, mkdir as mkdir4, readFile as readFile3, realpath, rename as rename3, stat as stat2, unlink as unlink4, writeFile as writeFile3 } from "node:fs/promises";
 import { homedir as homedir2 } from "node:os";
 import path3 from "node:path";
 import { fileURLToPath } from "node:url";
@@ -517,8 +517,11 @@ function canonicalKey(value, platform) {
   const normalized = resolve(value).replace(/[\\/]+/g, platform === "win32" ? "\\" : "/");
   return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
+function normalizedResponse(value) {
+  return typeof value === "string" ? value.replace(/\u0000/g, "").replace(/\r\n?/g, "\n").trim() : "";
+}
 function boundedResponse(value, maximum) {
-  const normalized = typeof value === "string" ? value.replace(/\u0000/g, "").replace(/\r\n?/g, "\n").trim() : "";
+  const normalized = normalizedResponse(value);
   return {
     text: normalized.length > maximum ? `${normalized.slice(0, maximum)}\u2026` : normalized,
     truncated: normalized.length > maximum
@@ -879,13 +882,15 @@ var AgySessionProcess = class {
       this._rejectTurn(new AgySessionError("TURN_NOT_SUCCESSFUL"));
       return;
     }
-    const response = boundedResponse(resultContent(value), this._maxResponseChars);
+    const fullResponse = normalizedResponse(resultContent(value));
+    const response = boundedResponse(fullResponse, this._maxResponseChars);
     this._turn = null;
     this._state = "ready";
     turn.deferred.resolve({
       status: "SUCCESS",
       response: response.text,
       responseTruncated: response.truncated,
+      ...turn.captureFullResponse ? { fullResponse } : {},
       metadata: {
         conversationId: this._conversationId,
         model: this._model,
@@ -983,7 +988,7 @@ var AgySessionProcess = class {
     this._startPromise = this._start();
     return this._startPromise;
   }
-  async sendTurn(prompt) {
+  async sendTurn(prompt, { captureFullResponse = false } = {}) {
     if (typeof prompt !== "string" || !prompt.length || Buffer.byteLength(prompt, "utf8") > this._maxPromptBytes) {
       throw new AgySessionError("INVALID_PROMPT");
     }
@@ -995,7 +1000,8 @@ var AgySessionProcess = class {
         deferred: deferred(),
         toolError: false,
         permissionDenied: false,
-        cancelRequested: false
+        cancelRequested: false,
+        captureFullResponse: captureFullResponse === true
       };
       this._turn = turn;
       this._state = "turn_active";
@@ -1773,6 +1779,10 @@ var MAX_MEMORY_RESULTS = 100;
 var MAX_DURABLE_RUNS = 500;
 var MAX_DURABLE_SESSIONS = 200;
 var MAX_IDEMPOTENCY_TOMBSTONES = 500;
+var DEFAULT_SESSION_PAGE_SIZE = 20;
+var MAX_SESSION_PAGE_SIZE = 100;
+var MAX_RECENT_RUNS_PER_SESSION = 5;
+var RESULT_ARTIFACT_DIRECTORY = "results";
 var TERMINAL_RUN_STATUSES = /* @__PURE__ */ new Set([
   "completed",
   "failed",
@@ -1799,6 +1809,10 @@ function workspaceDigest(cwd) {
 }
 function resultDigest(text) {
   return createHash6("sha256").update(text, "utf8").digest("hex");
+}
+function newestFirst(left, right, identifier) {
+  const updated = String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
+  return updated || String(left[identifier] || "").localeCompare(String(right[identifier] || ""));
 }
 function operationDigest(value) {
   return createHash6("sha256").update(JSON.stringify(value), "utf8").digest("hex");
@@ -1834,7 +1848,7 @@ function compactDurableHistory(state) {
 function validIdentifier(value) {
   return typeof value === "string" && value.length > 0 && value.length <= 128;
 }
-function publicSession(session) {
+function publicSession(session, history = {}) {
   if (!session) return null;
   return {
     sessionId: session.sessionId,
@@ -1846,6 +1860,8 @@ function publicSession(session) {
     conversationId: session.conversationId || null,
     status: session.status,
     activeRunId: session.activeRunId || null,
+    lastRunId: history.lastRunId || null,
+    recentRuns: Array.isArray(history.recentRuns) ? history.recentRuns : [],
     runtimeVersion: session.runtimeVersion || null,
     runtimeSha256: session.runtimeSha256 || null,
     runtimeSignatureStatus: session.runtimeSignatureStatus || null,
@@ -1853,6 +1869,17 @@ function publicSession(session) {
     updatedAt: session.updatedAt,
     closedAt: session.closedAt || null,
     recoveredAt: session.recoveredAt || null
+  };
+}
+function publicResultArtifact(run) {
+  if (run.saveResultArtifact !== true) return null;
+  return {
+    requested: true,
+    status: run.resultArtifactStatus || "pending",
+    path: run.resultArtifactPath || null,
+    bytes: Number.isInteger(run.resultArtifactBytes) ? run.resultArtifactBytes : null,
+    sha256: run.resultArtifactSha256 || null,
+    errorKind: run.resultArtifactErrorKind || null
   };
 }
 function publicRun(run, memoryResult) {
@@ -1872,6 +1899,7 @@ function publicRun(run, memoryResult) {
     resultSha256: run.resultSha256 || null,
     resultBytes: run.resultBytes ?? null,
     resultTruncated: run.resultTruncated ?? null,
+    resultArtifact: publicResultArtifact(run),
     permissionDeniedSeen: Boolean(run.permissionDeniedSeen),
     toolFailureSeen: Boolean(run.toolFailureSeen),
     startedAt: run.startedAt,
@@ -1883,6 +1911,62 @@ function publicRun(run, memoryResult) {
   };
   if (memoryResult !== void 0) value.result = memoryResult;
   return value;
+}
+function publicRunMetadata(run) {
+  const {
+    result,
+    resultAvailable,
+    requestId,
+    requestSha256,
+    requestBytes,
+    ...metadata
+  } = publicRun(run);
+  return metadata;
+}
+function sessionRunHistory(state, sessionId) {
+  const runs = Object.values(state.runs).filter((run) => run.sessionId === sessionId).sort((left, right) => newestFirst(left, right, "runId"));
+  return {
+    lastRunId: runs[0]?.runId || null,
+    recentRuns: runs.slice(0, MAX_RECENT_RUNS_PER_SESSION).map(publicRunMetadata)
+  };
+}
+function publicSessionWithHistory(state, session) {
+  return publicSession(session, sessionRunHistory(state, session?.sessionId));
+}
+function artifactLocation(paths, runId) {
+  const directory = path3.resolve(paths.stateDir, RESULT_ARTIFACT_DIRECTORY);
+  const filePath = path3.resolve(directory, `${resultDigest(runId)}.txt`);
+  const relative = path3.relative(directory, filePath);
+  if (!relative || relative.startsWith("..") || path3.isAbsolute(relative)) {
+    throw new SupervisorFault("RESULT_ARTIFACT_PATH_INVALID");
+  }
+  return { directory, filePath };
+}
+async function writeResultArtifact(paths, runId, fullResponse) {
+  if (typeof fullResponse !== "string") throw new SupervisorFault("FULL_RESULT_UNAVAILABLE");
+  const { directory, filePath } = artifactLocation(paths, runId);
+  const temporary = `${filePath}.${process.pid}.${randomUUID4()}.tmp`;
+  try {
+    await mkdir4(directory, { recursive: true });
+    await writeFile3(temporary, fullResponse, { encoding: "utf8", mode: 384, flag: "wx" });
+    await chmod4(temporary, 384).catch(() => {
+    });
+    await rename3(temporary, filePath);
+    await chmod4(filePath, 384).catch(() => {
+    });
+    return {
+      status: "available",
+      path: filePath,
+      bytes: Buffer.byteLength(fullResponse, "utf8"),
+      sha256: resultDigest(fullResponse),
+      errorKind: null
+    };
+  } catch (error) {
+    await unlink4(temporary).catch(() => {
+    });
+    if (error instanceof SupervisorFault) throw error;
+    throw new SupervisorFault("RESULT_ARTIFACT_WRITE_FAILED");
+  }
 }
 var AgySupervisorController = class {
   constructor({
@@ -1924,6 +2008,10 @@ var AgySupervisorController = class {
       state.epochId = epoch;
       for (const session of Object.values(state.sessions)) delete session.pendingConversationId;
       for (const run of Object.values(state.runs)) {
+        if (run.status === "unknown_after_restart" && run.saveResultArtifact && run.resultArtifactStatus === "pending") {
+          run.resultArtifactStatus = "unavailable";
+          run.resultArtifactErrorKind = "RESULT_NOT_AVAILABLE";
+        }
         if (run.status === "unknown_after_restart" && (run.recoveryProcessId || run.remoteStatus !== "not_started" && run.remoteStatus !== "not_sent")) {
           state.reservations[run.workspaceHash] = { runId: run.runId, sessionId: run.sessionId };
         } else if (run.status === "unknown_after_restart" && !run.recoveryProcessId) {
@@ -2005,6 +2093,10 @@ var AgySupervisorController = class {
     if (params.confirmation !== "SEND_TO_AGY") fail("CONFIRMATION_REQUIRED");
     if (params.mode !== "new" && params.mode !== "resume") fail("INVALID_MODE");
     if (typeof params.prompt !== "string" || !params.prompt.length) fail("INVALID_PROMPT");
+    if (params.saveResultArtifact !== void 0 && typeof params.saveResultArtifact !== "boolean") {
+      fail("INVALID_RESULT_ARTIFACT_OPTION");
+    }
+    const saveResultArtifact = params.saveResultArtifact === true;
     const request = hashPrompt(params.prompt);
     if (request.bytes > MAX_PROMPT_BYTES) fail("PROMPT_TOO_LARGE");
     const workspace = await this._resolveWorkspace(params.cwd);
@@ -2036,7 +2128,7 @@ var AgySupervisorController = class {
         fail("INVALID_MODEL");
       }
       if (!["low", "medium", "high"].includes(selectedEffort)) fail("INVALID_EFFORT");
-      const intentSha256 = operationDigest({
+      const intent = {
         mode: params.mode,
         sessionId,
         workspaceHash: workspace.workspaceHash,
@@ -2044,7 +2136,9 @@ var AgySupervisorController = class {
         requestBytes: request.bytes,
         model: selectedModel,
         effort: selectedEffort
-      });
+      };
+      if (saveResultArtifact) intent.saveResultArtifact = true;
+      const intentSha256 = operationDigest(intent);
       const prior = Object.values(current.runs).find((run) => run.requestId === requestId);
       if (prior) {
         if (prior.intentSha256 !== intentSha256) fail("REQUEST_ID_CONFLICT");
@@ -2052,7 +2146,7 @@ var AgySupervisorController = class {
           accepted: true,
           reused: true,
           revision: current.revision || 0,
-          session: publicSession(current.sessions[prior.sessionId]),
+          session: publicSessionWithHistory(current, current.sessions[prior.sessionId]),
           run: publicRun(prior, this.memoryResults.get(prior.runId))
         };
       }
@@ -2118,6 +2212,8 @@ var AgySupervisorController = class {
           status: "starting",
           phase: "runtime_gate",
           resultStatus: null,
+          saveResultArtifact,
+          resultArtifactStatus: saveResultArtifact ? "pending" : null,
           errorKind: null,
           remoteStatus: "not_started",
           permissionDeniedSeen: false,
@@ -2130,13 +2226,13 @@ var AgySupervisorController = class {
       this.activity.set(runId, { permissionDeniedSeen: false, toolFailureSeen: false });
       this.activeRunBySession.set(sessionId, runId);
       queueMicrotask(() => {
-        void this._executeTurn(sessionId, runId, params.prompt);
+        void this._executeTurn(sessionId, runId, params.prompt, saveResultArtifact);
       });
       return {
         accepted: true,
         reused: false,
         revision: next.revision,
-        session: publicSession(next.sessions[sessionId]),
+        session: publicSessionWithHistory(next, next.sessions[sessionId]),
         run: publicRun(next.runs[runId])
       };
     });
@@ -2167,6 +2263,10 @@ var AgySupervisorController = class {
       run.phase = "terminal";
       run.remoteStatus = "not_sent";
       run.resultStatus = "CANCELLED_BEFORE_SEND";
+      if (run.saveResultArtifact) {
+        run.resultArtifactStatus = "unavailable";
+        run.resultArtifactErrorKind = "RESULT_NOT_AVAILABLE";
+      }
       run.completedAt = this.now();
       run.updatedAt = this.now();
       delete run.childPid;
@@ -2209,7 +2309,7 @@ var AgySupervisorController = class {
     this.processes.set(session.sessionId, managed);
     return managed;
   }
-  async _executeTurn(sessionId, runId, prompt) {
+  async _executeTurn(sessionId, runId, prompt, saveResultArtifact = false) {
     let managed;
     let promptMayHaveBeenSent = false;
     try {
@@ -2262,10 +2362,24 @@ var AgySupervisorController = class {
         remoteStatus: "active"
       });
       promptMayHaveBeenSent = true;
-      const output = await managed.sendTurn(prompt);
+      const output = await managed.sendTurn(prompt, { captureFullResponse: saveResultArtifact });
       const response = output.response || "";
       const flags = this.activity.get(runId) || {};
       this._rememberResult(runId, response);
+      let artifact = null;
+      if (saveResultArtifact) {
+        try {
+          artifact = await writeResultArtifact(this.paths, runId, output.fullResponse);
+        } catch (error) {
+          artifact = {
+            status: "failed",
+            path: null,
+            bytes: null,
+            sha256: null,
+            errorKind: fixedKind(error, "RESULT_ARTIFACT_WRITE_FAILED")
+          };
+        }
+      }
       await this._update((draft) => {
         const currentSession = draft.sessions[sessionId];
         const run = draft.runs[runId];
@@ -2288,6 +2402,13 @@ var AgySupervisorController = class {
         run.resultSha256 = resultDigest(response);
         run.resultBytes = Buffer.byteLength(response, "utf8");
         run.resultTruncated = Boolean(output.responseTruncated);
+        if (saveResultArtifact) {
+          run.resultArtifactStatus = artifact.status;
+          run.resultArtifactPath = artifact.path;
+          run.resultArtifactBytes = artifact.bytes;
+          run.resultArtifactSha256 = artifact.sha256;
+          run.resultArtifactErrorKind = artifact.errorKind;
+        }
         run.permissionDeniedSeen = Boolean(flags.permissionDeniedSeen);
         run.toolFailureSeen = Boolean(flags.toolFailureSeen);
         run.completedAt = this.now();
@@ -2322,6 +2443,13 @@ var AgySupervisorController = class {
         if (uncertain) run.failureKind = errorKind;
         run.remoteStatus = uncertain ? closeState?.remoteStatus === "exited" ? "exited_without_terminal" : "remote_unknown" : knownTerminalFailure ? "terminal_failure" : "not_sent";
         run.resultStatus = uncertain ? "UNKNOWN" : "FAILED";
+        if (run.saveResultArtifact) {
+          run.resultArtifactStatus = "unavailable";
+          run.resultArtifactErrorKind = "RESULT_NOT_AVAILABLE";
+          delete run.resultArtifactPath;
+          delete run.resultArtifactBytes;
+          delete run.resultArtifactSha256;
+        }
         run.permissionDeniedSeen = Boolean(flags.permissionDeniedSeen);
         run.toolFailureSeen = Boolean(flags.toolFailureSeen || errorKind === "TOOL_FAILURE");
         run.completedAt = this.now();
@@ -2344,6 +2472,15 @@ var AgySupervisorController = class {
     }
   }
   async inspect(params = {}) {
+    const hasSessionId = params.sessionId !== void 0;
+    const hasRunId = params.runId !== void 0;
+    const hasPagination = params.cursor !== void 0 || params.limit !== void 0;
+    if (hasSessionId && !validIdentifier(params.sessionId)) fail("INVALID_SESSION_ID");
+    if (hasRunId && !validIdentifier(params.runId)) fail("INVALID_RUN_ID");
+    if (hasPagination && (hasSessionId || hasRunId)) fail("PAGINATION_NOT_ALLOWED");
+    if (params.cursor !== void 0 && !validIdentifier(params.cursor)) fail("INVALID_CURSOR");
+    const limit = params.limit === void 0 ? DEFAULT_SESSION_PAGE_SIZE : params.limit;
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_SESSION_PAGE_SIZE) fail("INVALID_SESSION_LIMIT");
     const waitMs = Number.isInteger(params.waitMs) ? params.waitMs : 0;
     const state = await this._waitForRevision(params.afterRevision, waitMs);
     const sessionId = params.sessionId;
@@ -2361,11 +2498,19 @@ var AgySupervisorController = class {
           protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
           runtimeVersion: SUPERVISOR_RUNTIME_VERSION
         },
-        session: publicSession(selectedSession),
+        session: publicSessionWithHistory(state, selectedSession),
         run: publicRun(run || (selectedSession?.activeRunId ? state.runs[selectedSession.activeRunId] : null), runId ? this.memoryResults.get(runId) : void 0)
       };
     }
-    const sessions = Object.values(state.sessions).sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt))).slice(0, 20).map(publicSession);
+    const ordered = Object.values(state.sessions).sort((left, right) => newestFirst(left, right, "sessionId"));
+    let offset = 0;
+    if (params.cursor !== void 0) {
+      const cursorIndex = ordered.findIndex((session) => session.sessionId === params.cursor);
+      if (cursorIndex < 0) fail("INVALID_CURSOR");
+      offset = cursorIndex + 1;
+    }
+    const page = ordered.slice(offset, offset + limit);
+    const omittedSessions = Math.max(0, ordered.length - offset - page.length);
     return {
       revision: state.revision || 0,
       epochId: state.epochId || null,
@@ -2373,8 +2518,9 @@ var AgySupervisorController = class {
         protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
         runtimeVersion: SUPERVISOR_RUNTIME_VERSION
       },
-      sessions,
-      omittedSessions: Math.max(0, Object.keys(state.sessions).length - sessions.length)
+      sessions: page.map((session) => publicSessionWithHistory(state, session)),
+      omittedSessions,
+      nextCursor: omittedSessions > 0 ? page[page.length - 1]?.sessionId || null : null
     };
   }
   async control(params = {}) {
@@ -2435,7 +2581,7 @@ var AgySupervisorController = class {
           currentSession.updatedAt = this.now();
           delete draft.reservations[current.workspaceHash];
         });
-        return { accepted: true, revision: next.revision, session: publicSession(next.sessions[session.sessionId]), run: publicRun(next.runs[run.runId]) };
+        return { accepted: true, revision: next.revision, session: publicSessionWithHistory(next, next.sessions[session.sessionId]), run: publicRun(next.runs[run.runId]) };
       }
       if (params.action === "close_session") {
         if (session.activeRunId) fail("SESSION_BUSY");
@@ -2450,7 +2596,7 @@ var AgySupervisorController = class {
           current.closedAt = this.now();
           current.updatedAt = this.now();
         });
-        return { accepted: true, revision: next.revision, session: publicSession(next.sessions[session.sessionId]), close };
+        return { accepted: true, revision: next.revision, session: publicSessionWithHistory(next, next.sessions[session.sessionId]), close };
       }
       fail("INVALID_CONTROL_ACTION");
     });

@@ -70,7 +70,9 @@ input.on("line", (line) => {
   if (scenario === "always-proceed-tool-label") {
     emit({ event: "step_update", step_update: { step_type: "tool", tool_info: { status: "success", permission_mode: "always-proceed" } } });
   }
-  const response = scenario === "large-response" ? "界".repeat(6000) : "reply-" + turns;
+  const response = scenario === "large-response" ? "界".repeat(6000)
+    : scenario === "long-response" ? "界".repeat(9001)
+      : "reply-" + turns;
   emit({ event: "result", result: { status: "SUCCESS", conversation_id: conversationId, response } });
   if (scenario === "result-and-exit") process.exit(0);
 });
@@ -176,6 +178,18 @@ test("default NDJSON line budget accepts a bounded multi-byte response", async (
   const result = await session.sendTurn("return a bounded response");
   assert.equal(result.response, "界".repeat(6000));
   assert.equal(result.responseTruncated, false);
+  assert.equal(Object.hasOwn(result, "fullResponse"), false);
+});
+
+test("opt-in full response capture preserves the terminal reply before inline truncation", async (t) => {
+  const { session } = createFakeSession(t, "long-response");
+  const fullResponse = "界".repeat(9001);
+  await session.start();
+  const result = await session.sendTurn("capture the complete final reply", { captureFullResponse: true });
+
+  assert.equal(result.response, `${fullResponse.slice(0, 8000)}…`);
+  assert.equal(result.responseTruncated, true);
+  assert.equal(result.fullResponse, fullResponse);
 });
 
 test("a valid terminal result remains authoritative when the child exits immediately after it", async (t) => {

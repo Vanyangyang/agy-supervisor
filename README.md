@@ -32,6 +32,8 @@ node .\plugins\agy-supervisor\dist\agy-supervisor.mjs panel
 
 The panel inspects bounded Supervisor state and can copy a sanitized handoff JSON. It is not an Antigravity chat client.
 
+See [CHANGELOG.md](CHANGELOG.md) for the 0.3.0 release notes and verification boundary.
+
 Read the [plugin documentation](plugins/agy-supervisor/README.md) for runtime, authentication, persistence, cancellation, and safety details.
 
 ## License

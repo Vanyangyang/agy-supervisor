@@ -15,6 +15,9 @@ test("help exports exactly the supported topics", () => {
 
 test("help text states the safety and continuity contracts", () => {
   assert.match(getHelp("session"), /exact confirmed conversation ID/i);
+  assert.match(getHelp("session"), /nextCursor/i);
+  assert.match(getHelp("session"), /saveResultArtifact: true/i);
+  assert.match(getHelp("session"), /memory-only/i);
   assert.match(getHelp("version"), /1\.1\.25/);
   assert.match(getHelp("version"), /hash\/signature gate/i);
   assert.match(getHelp("auth"), /Windows Credential Manager/i);
